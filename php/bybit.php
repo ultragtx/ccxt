@@ -53,7 +53,7 @@ class bybit extends Exchange {
                 'fetchDepositAddressesByNetwork' => true,
                 'fetchDeposits' => true,
                 'fetchFundingRate' => true,
-                'fetchFundingRateHistory' => false,
+                'fetchFundingRateHistory' => true,
                 'fetchIndexOHLCV' => true,
                 'fetchLedger' => true,
                 'fetchMarketLeverageTiers' => true,
@@ -115,6 +115,7 @@ class bybit extends Exchange {
                     'v2' => 'https://api.{hostname}',
                     'public' => 'https://api.{hostname}',
                     'private' => 'https://api.{hostname}',
+                    'public2' => 'https://api2.{hostname}',
                 ),
                 'www' => 'https://www.bybit.com',
                 'doc' => array(
@@ -144,6 +145,7 @@ class bybit extends Exchange {
                         'v2/public/elite-ratio' => 1,
                         'v2/public/funding/prev-funding-rate' => 1,
                         'v2/public/risk-limit/list' => 1,
+                        'funding-rate/list' => 1,
                         // linear swap USDT
                         'public/linear/kline' => 3,
                         'public/linear/recent-trading-records' => 1,
@@ -152,6 +154,7 @@ class bybit extends Exchange {
                         'public/linear/mark-price-kline' => 1,
                         'public/linear/index-price-kline' => 1,
                         'public/linear/premium-index-kline' => 1,
+                        'linear/funding-rate/list' => 1,
                         // spot
                         'spot/v1/time' => 1,
                         'spot/v1/symbols' => 1,
@@ -361,6 +364,13 @@ class bybit extends Exchange {
                         'spot/order/batch-cancel' => 2.5,
                         'spot/order/batch-fast-cancel' => 2.5,
                         'spot/order/batch-cancel-by-ids' => 2.5,
+                    ),
+                ),
+                'public2' => array(
+                    'get' => array(
+                        // 'linear/funding-rate/list' => 1,
+                        // 'funding-rate/list' => 1,
+                        'fapi/usdc/public/v1/instrument/funding-rate/list' => 1,
                     ),
                 ),
             ),
@@ -1730,6 +1740,116 @@ class bybit extends Exchange {
             'previousFundingTimestamp' => null,
             'previousFundingDatetime' => null,
         );
+    }
+
+    public function fetch_funding_rate_history($symbol = null, $since = null, $limit = null, $params = array ()) {
+        /**
+         * fetches historical funding rate prices
+         * @param {str|null} $symbol unified $symbol of the $market to fetch the funding rate history for
+         * @param {int|null} $since $timestamp in ms of the earliest funding rate to fetch
+         * @param {int|null} $limit the maximum amount of ~@link https://docs.ccxt.com/en/latest/manual.html?#funding-rate-history-structure funding rate structures~ to fetch
+         * @param {dict} $params extra parameters specific to the binance api endpoint
+         * @param {int|null} $params->until $timestamp in ms of the latest funding rate
+         * @return {[dict]} a list of ~@link https://docs.ccxt.com/en/latest/manual.html?#funding-rate-history-structure funding rate structures~
+         */
+        $this->load_markets();
+        $market = $this->market($symbol);
+        $request = array(
+            'symbol' => $market['id'],
+            'pageSize' => 40,
+        );
+        $method = null;
+        $should_fetch_twice = true; // fetch twich for non-usdc $symbol, as the pageSize won't work
+        if ($market['settle'] === 'USDC' && $market['linear']) {
+            $method = 'public2GetFapiUsdcPublicV1InstrumentFundingRateList';
+            $should_fetch_twice = false;
+        } elseif ($market['linear']) {
+            $method = 'publicGetLinearFundingRateList';
+        } else {
+            $method = 'publicGetFundingRateList';
+        }
+        if ($method === null) {
+            throw new NotSupported($this->id . ' fetchFundingRateHistory() is not supported for ' . $symbol . ' markets');
+        }
+        $response = $this->$method (array_merge($request, $params));
+        // second $request
+        $request['page'] = 2; // page 2
+        $response2 = $should_fetch_twice ? $this->$method (array_merge($request, $params)) : null;
+        // NOT USDC
+        // {
+        //     "ret_code" => 0,
+        //     "ret_msg" => "ok",
+        //     "ext_code" => "",
+        //     "ext_info" => "",
+        //     "result" => array(
+        //         "current_page" => 1,
+        //         "data" => [array(
+        //             "id" => 24486,
+        //             "symbol" => "ETHUSD",
+        //             "value" => "0.00008031",
+        //             "time" => "2022-07-20T00:00:00.000Z"
+        //         ), array(
+        //             "id" => 24475,
+        //             "symbol" => "ETHUSD",
+        //             "value" => "0.0001",
+        //             "time" => "2022-07-19T16:00:00.000Z"
+        //         ),...
+        //         ],
+        //         "first_page_url" => "http://api.bybit.com/funding-rate/list?page=1",
+        //         "from" => 1,
+        //         "last_page" => 20,
+        //         "last_page_url" => "http://api.bybit.com/funding-rate/list?page=20",
+        //         "next_page_url" => "http://api.bybit.com/funding-rate/list?page=2",
+        //         "path" => "http://api.bybit.com/funding-rate/list",
+        //         "per_page" => 20,
+        //         "prev_page_url" => null,
+        //         "to" => 20,
+        //         "total" => 400
+        //     ),
+        //     "time_now" => "1658298337.526077"
+        // }
+        // USDC
+        // {
+        //     "ret_code" => 0,
+        //     "ret_msg" => "OK",
+        //     "ext_code" => "",
+        //     "result" => array(
+        //         "list" => [array(
+        //             "symbol" => "BTCPERP",
+        //             "time" => "1658476800.000000000",
+        //             "value" => "0.00020392"
+        //         ), array(
+        //             "symbol" => "BTCPERP",
+        //             "time" => "1658448000.000000000",
+        //             "value" => "0.00010000"
+        //         ),...
+        //         ],
+        //         "cursor" => "eyJtaW5JRCI6NTQ5LCJtYXhJRCI6NTY4fQ=="
+        //     ),
+        //     "ext_info" => null,
+        //     "token" => null,
+        //     "time_now" => "1658471347.222839"
+        // }
+        $result = $this->safe_value($response, 'result', array());
+        $data = $this->safe_value_2($result, 'data', 'list', array());
+        $result2 = $this->safe_value($response2, 'result', array());
+        $data2 = $this->safe_value_2($result2, 'data', 'list', array());
+        $rates = array();
+        $data_all = $this->array_concat($data, $data2);
+        for ($i = 0; $i < count($data_all); $i++) {
+            $entry = $data_all[$i];
+            $marketId = $this->safe_string($entry, 'symbol');
+            $timestamp = $this->parse8601($this->safe_string($entry, 'time')) || $this->safe_integer($entry, 'time') * 1000;
+            $rates[] = array(
+                'info' => $entry,
+                'symbol' => $this->safe_symbol($marketId),
+                'fundingRate' => $this->safe_number($entry, 'value'),
+                'timestamp' => $timestamp,
+                'datetime' => $this->iso8601($timestamp),
+            );
+        }
+        $sorted = $this->sort_by($rates, 'timestamp');
+        return $this->filter_by_symbol_since_limit($sorted, $symbol, $since, $limit);
     }
 
     public function fetch_index_ohlcv($symbol, $timeframe = '1m', $since = null, $limit = null, $params = array ()) {
@@ -4996,7 +5116,7 @@ class bybit extends Exchange {
 
     public function sign($path, $api = 'public', $method = 'GET', $params = array (), $headers = null, $body = null) {
         $url = $this->implode_hostname($this->urls['api'][$api]) . '/' . $path;
-        if ($api === 'public') {
+        if ($api === 'public' || $api === 'public2') {
             if ($params) {
                 $url .= '?' . $this->rawencode($params);
             }

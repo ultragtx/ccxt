@@ -47,7 +47,7 @@ module.exports = class bybit extends Exchange {
                 'fetchDepositAddressesByNetwork': true,
                 'fetchDeposits': true,
                 'fetchFundingRate': true,
-                'fetchFundingRateHistory': false,
+                'fetchFundingRateHistory': true,
                 'fetchIndexOHLCV': true,
                 'fetchLedger': true,
                 'fetchMarketLeverageTiers': true,
@@ -109,6 +109,7 @@ module.exports = class bybit extends Exchange {
                     'v2': 'https://api.{hostname}',
                     'public': 'https://api.{hostname}',
                     'private': 'https://api.{hostname}',
+                    'public2': 'https://api2.{hostname}',
                 },
                 'www': 'https://www.bybit.com',
                 'doc': [
@@ -138,6 +139,7 @@ module.exports = class bybit extends Exchange {
                         'v2/public/elite-ratio': 1,
                         'v2/public/funding/prev-funding-rate': 1,
                         'v2/public/risk-limit/list': 1,
+                        'funding-rate/list': 1,
                         // linear swap USDT
                         'public/linear/kline': 3,
                         'public/linear/recent-trading-records': 1,
@@ -146,6 +148,7 @@ module.exports = class bybit extends Exchange {
                         'public/linear/mark-price-kline': 1,
                         'public/linear/index-price-kline': 1,
                         'public/linear/premium-index-kline': 1,
+                        'linear/funding-rate/list': 1,
                         // spot
                         'spot/v1/time': 1,
                         'spot/v1/symbols': 1,
@@ -355,6 +358,13 @@ module.exports = class bybit extends Exchange {
                         'spot/order/batch-cancel': 2.5,
                         'spot/order/batch-fast-cancel': 2.5,
                         'spot/order/batch-cancel-by-ids': 2.5,
+                    },
+                },
+                'public2': {
+                    'get': {
+                        // 'linear/funding-rate/list': 1,
+                        // 'funding-rate/list': 1,
+                        'fapi/usdc/public/v1/instrument/funding-rate/list': 1,
                     },
                 },
             },
@@ -1739,6 +1749,118 @@ module.exports = class bybit extends Exchange {
             'previousFundingTimestamp': undefined,
             'previousFundingDatetime': undefined,
         };
+    }
+
+    async fetchFundingRateHistory (symbol = undefined, since = undefined, limit = undefined, params = {}) {
+        /**
+         * @method
+         * @name bybit#fetchFundingRateHistory
+         * @description fetches historical funding rate prices
+         * @param {str|undefined} symbol unified symbol of the market to fetch the funding rate history for
+         * @param {int|undefined} since timestamp in ms of the earliest funding rate to fetch
+         * @param {int|undefined} limit the maximum amount of [funding rate structures]{@link https://docs.ccxt.com/en/latest/manual.html?#funding-rate-history-structure} to fetch
+         * @param {dict} params extra parameters specific to the binance api endpoint
+         * @param {int|undefined} params.until timestamp in ms of the latest funding rate
+         * @returns {[dict]} a list of [funding rate structures]{@link https://docs.ccxt.com/en/latest/manual.html?#funding-rate-history-structure}
+         */
+        await this.loadMarkets ();
+        const market = this.market (symbol);
+        const request = {
+            'symbol': market['id'],
+            'pageSize': 40,
+        };
+        let method = undefined;
+        let should_fetch_twice = true; // fetch twich for non-usdc symbol, as the pageSize won't work
+        if (market['settle'] === 'USDC' && market['linear']) {
+            method = 'public2GetFapiUsdcPublicV1InstrumentFundingRateList';
+            should_fetch_twice = false;
+        } else if (market['linear']) {
+            method = 'publicGetLinearFundingRateList';
+        } else {
+            method = 'publicGetFundingRateList';
+        }
+        if (method === undefined) {
+            throw new NotSupported (this.id + ' fetchFundingRateHistory() is not supported for ' + symbol + ' markets');
+        }
+        const response = await this[method] (this.extend (request, params));
+        // second request
+        request['page'] = 2; // page 2
+        const response2 = should_fetch_twice ? await this[method] (this.extend (request, params)) : undefined;
+        // NOT USDC
+        // {
+        //     "ret_code": 0,
+        //     "ret_msg": "ok",
+        //     "ext_code": "",
+        //     "ext_info": "",
+        //     "result": {
+        //         "current_page": 1,
+        //         "data": [{
+        //             "id": 24486,
+        //             "symbol": "ETHUSD",
+        //             "value": "0.00008031",
+        //             "time": "2022-07-20T00:00:00.000Z"
+        //         }, {
+        //             "id": 24475,
+        //             "symbol": "ETHUSD",
+        //             "value": "0.0001",
+        //             "time": "2022-07-19T16:00:00.000Z"
+        //         },...
+        //         ],
+        //         "first_page_url": "http://api.bybit.com/funding-rate/list?page=1",
+        //         "from": 1,
+        //         "last_page": 20,
+        //         "last_page_url": "http://api.bybit.com/funding-rate/list?page=20",
+        //         "next_page_url": "http://api.bybit.com/funding-rate/list?page=2",
+        //         "path": "http://api.bybit.com/funding-rate/list",
+        //         "per_page": 20,
+        //         "prev_page_url": null,
+        //         "to": 20,
+        //         "total": 400
+        //     },
+        //     "time_now": "1658298337.526077"
+        // }
+        // USDC
+        // {
+        //     "ret_code": 0,
+        //     "ret_msg": "OK",
+        //     "ext_code": "",
+        //     "result": {
+        //         "list": [{
+        //             "symbol": "BTCPERP",
+        //             "time": "1658476800.000000000",
+        //             "value": "0.00020392"
+        //         }, {
+        //             "symbol": "BTCPERP",
+        //             "time": "1658448000.000000000",
+        //             "value": "0.00010000"
+        //         },...
+        //         ],
+        //         "cursor": "eyJtaW5JRCI6NTQ5LCJtYXhJRCI6NTY4fQ=="
+        //     },
+        //     "ext_info": null,
+        //     "token": null,
+        //     "time_now": "1658471347.222839"
+        // }
+        const result = this.safeValue (response, 'result', {});
+        const data = this.safeValue2 (result, 'data', 'list', []);
+        const result2 = this.safeValue (response2, 'result', {});
+        const data2 = this.safeValue2 (result2, 'data', 'list', []);
+        const rates = [];
+        const data_all = this.array_concat (data, data2);
+        for (let i = 0; i < data_all.length; i++) {
+            const entry = data_all[i];
+            const marketId = this.safeString (entry, 'symbol');
+            const timestamp = this.parse8601 (this.safeString (entry, 'time')) || this.safeInteger (entry, 'time') * 1000;
+            rates.push ({
+                'info': entry,
+                'symbol': this.safeSymbol (marketId),
+                'fundingRate': this.safeNumber (entry, 'value'),
+                'timestamp': timestamp,
+                'datetime': this.iso8601 (timestamp),
+            });
+        }
+        const sorted = this.sortBy (rates, 'timestamp');
+        return this.filterBySymbolSinceLimit (sorted, symbol, since, limit);
     }
 
     async fetchIndexOHLCV (symbol, timeframe = '1m', since = undefined, limit = undefined, params = {}) {
@@ -5055,7 +5177,7 @@ module.exports = class bybit extends Exchange {
 
     sign (path, api = 'public', method = 'GET', params = {}, headers = undefined, body = undefined) {
         let url = this.implodeHostname (this.urls['api'][api]) + '/' + path;
-        if (api === 'public') {
+        if (api === 'public' || api === 'public2') {
             if (Object.keys (params).length) {
                 url += '?' + this.rawencode (params);
             }

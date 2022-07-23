@@ -62,7 +62,7 @@ class bybit(Exchange):
                 'fetchDepositAddressesByNetwork': True,
                 'fetchDeposits': True,
                 'fetchFundingRate': True,
-                'fetchFundingRateHistory': False,
+                'fetchFundingRateHistory': True,
                 'fetchIndexOHLCV': True,
                 'fetchLedger': True,
                 'fetchMarketLeverageTiers': True,
@@ -124,6 +124,7 @@ class bybit(Exchange):
                     'v2': 'https://api.{hostname}',
                     'public': 'https://api.{hostname}',
                     'private': 'https://api.{hostname}',
+                    'public2': 'https://api2.{hostname}',
                 },
                 'www': 'https://www.bybit.com',
                 'doc': [
@@ -153,6 +154,7 @@ class bybit(Exchange):
                         'v2/public/elite-ratio': 1,
                         'v2/public/funding/prev-funding-rate': 1,
                         'v2/public/risk-limit/list': 1,
+                        'funding-rate/list': 1,
                         # linear swap USDT
                         'public/linear/kline': 3,
                         'public/linear/recent-trading-records': 1,
@@ -161,6 +163,7 @@ class bybit(Exchange):
                         'public/linear/mark-price-kline': 1,
                         'public/linear/index-price-kline': 1,
                         'public/linear/premium-index-kline': 1,
+                        'linear/funding-rate/list': 1,
                         # spot
                         'spot/v1/time': 1,
                         'spot/v1/symbols': 1,
@@ -370,6 +373,13 @@ class bybit(Exchange):
                         'spot/order/batch-cancel': 2.5,
                         'spot/order/batch-fast-cancel': 2.5,
                         'spot/order/batch-cancel-by-ids': 2.5,
+                    },
+                },
+                'public2': {
+                    'get': {
+                        # 'linear/funding-rate/list': 1,
+                        # 'funding-rate/list': 1,
+                        'fapi/usdc/public/v1/instrument/funding-rate/list': 1,
                     },
                 },
             },
@@ -1695,6 +1705,114 @@ class bybit(Exchange):
             'previousFundingTimestamp': None,
             'previousFundingDatetime': None,
         }
+
+    async def fetch_funding_rate_history(self, symbol=None, since=None, limit=None, params={}):
+        """
+        fetches historical funding rate prices
+        :param str|None symbol: unified symbol of the market to fetch the funding rate history for
+        :param int|None since: timestamp in ms of the earliest funding rate to fetch
+        :param int|None limit: the maximum amount of `funding rate structures <https://docs.ccxt.com/en/latest/manual.html?#funding-rate-history-structure>` to fetch
+        :param dict params: extra parameters specific to the binance api endpoint
+        :param int|None params['until']: timestamp in ms of the latest funding rate
+        :returns [dict]: a list of `funding rate structures <https://docs.ccxt.com/en/latest/manual.html?#funding-rate-history-structure>`
+        """
+        await self.load_markets()
+        market = self.market(symbol)
+        request = {
+            'symbol': market['id'],
+            'pageSize': 40,
+        }
+        method = None
+        should_fetch_twice = True  # fetch twich for non-usdc symbol, as the pageSize won't work
+        if market['settle'] == 'USDC' and market['linear']:
+            method = 'public2GetFapiUsdcPublicV1InstrumentFundingRateList'
+            should_fetch_twice = False
+        elif market['linear']:
+            method = 'publicGetLinearFundingRateList'
+        else:
+            method = 'publicGetFundingRateList'
+        if method is None:
+            raise NotSupported(self.id + ' fetchFundingRateHistory() is not supported for ' + symbol + ' markets')
+        response = await getattr(self, method)(self.extend(request, params))
+        # second request
+        request['page'] = 2  # page 2
+        response2 = await getattr(self, method)(self.extend(request, params)) if should_fetch_twice else None
+        # NOT USDC
+        # {
+        #     "ret_code": 0,
+        #     "ret_msg": "ok",
+        #     "ext_code": "",
+        #     "ext_info": "",
+        #     "result": {
+        #         "current_page": 1,
+        #         "data": [{
+        #             "id": 24486,
+        #             "symbol": "ETHUSD",
+        #             "value": "0.00008031",
+        #             "time": "2022-07-20T00:00:00.000Z"
+        #         }, {
+        #             "id": 24475,
+        #             "symbol": "ETHUSD",
+        #             "value": "0.0001",
+        #             "time": "2022-07-19T16:00:00.000Z"
+        #         },...
+        #         ],
+        #         "first_page_url": "http://api.bybit.com/funding-rate/list?page=1",
+        #         "from": 1,
+        #         "last_page": 20,
+        #         "last_page_url": "http://api.bybit.com/funding-rate/list?page=20",
+        #         "next_page_url": "http://api.bybit.com/funding-rate/list?page=2",
+        #         "path": "http://api.bybit.com/funding-rate/list",
+        #         "per_page": 20,
+        #         "prev_page_url": null,
+        #         "to": 20,
+        #         "total": 400
+        #     },
+        #     "time_now": "1658298337.526077"
+        # }
+        # USDC
+        # {
+        #     "ret_code": 0,
+        #     "ret_msg": "OK",
+        #     "ext_code": "",
+        #     "result": {
+        #         "list": [{
+        #             "symbol": "BTCPERP",
+        #             "time": "1658476800.000000000",
+        #             "value": "0.00020392"
+        #         }, {
+        #             "symbol": "BTCPERP",
+        #             "time": "1658448000.000000000",
+        #             "value": "0.00010000"
+        #         },...
+        #         ],
+        #         "cursor": "eyJtaW5JRCI6NTQ5LCJtYXhJRCI6NTY4fQ=="
+        #     },
+        #     "ext_info": null,
+        #     "token": null,
+        #     "time_now": "1658471347.222839"
+        # }
+        result = self.safe_value(response, 'result', {})
+        data = self.safe_value_2(result, 'data', 'list', [])
+        result2 = self.safe_value(response2, 'result', {})
+        data2 = self.safe_value_2(result2, 'data', 'list', [])
+        rates = []
+        print(data)
+        print(data2)
+        data_all = self.array_concat(data, data2)
+        for i in range(0, len(data_all)):
+            entry = data_all[i]
+            marketId = self.safe_string(entry, 'symbol')
+            timestamp = self.parse8601(self.safe_string(entry, 'time')) or self.safe_integer(entry, 'time') * 1000
+            rates.append({
+                'info': entry,
+                'symbol': self.safe_symbol(marketId),
+                'fundingRate': self.safe_number(entry, 'value'),
+                'timestamp': timestamp,
+                'datetime': self.iso8601(timestamp),
+            })
+        sorted = self.sort_by(rates, 'timestamp')
+        return self.filter_by_symbol_since_limit(sorted, symbol, since, limit)
 
     async def fetch_index_ohlcv(self, symbol, timeframe='1m', since=None, limit=None, params={}):
         if since is None and limit is None:
@@ -4747,7 +4865,7 @@ class bybit(Exchange):
 
     def sign(self, path, api='public', method='GET', params={}, headers=None, body=None):
         url = self.implode_hostname(self.urls['api'][api]) + '/' + path
-        if api == 'public':
+        if api == 'public' or api == 'public2':
             if params:
                 url += '?' + self.rawencode(params)
         elif api == 'private':
